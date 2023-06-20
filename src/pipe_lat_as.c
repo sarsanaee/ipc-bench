@@ -38,8 +38,10 @@
 
 #if defined(_POSIX_TIMERS) && (_POSIX_TIMERS > 0) &&                           \
     defined(_POSIX_MONOTONIC_CLOCK)
-#define HAS_CLOCK_GETTIME_MONOTONIC
+#define HAS_CLOCK_GETTIME_MONOTONIC 
 #endif
+
+uint64_t RTT [20000];
 
 int main(int argc, char *argv[]) {
   int ofds[2];
@@ -47,13 +49,9 @@ int main(int argc, char *argv[]) {
 
   int size;
   char *buf;
-  uint64_t *RTT;
   int64_t count, i, delta;
-#ifdef HAS_CLOCK_GETTIME_MONOTONIC
   struct timespec start, stop;
-#else
-  struct timeval start, stop;
-#endif
+  struct timespec start_avg, stop_avg;
 
   if (argc != 3) {
     printf("usage: pipe_lat <message-size> <roundtrip-count>\n");
@@ -63,20 +61,14 @@ int main(int argc, char *argv[]) {
   size = atoi(argv[1]);
   count = atol(argv[2]);
 
-  RTT = malloc(count * sizeof(uint64_t));
-  if (RTT == NULL) {
-    perror("malloc");
-    return 1;
-  }
-
   buf = malloc(size);
   if (buf == NULL) {
     perror("malloc");
     return 1;
   }
 
-  // printf("message size: %i octets\n", size);
-  // printf("roundtrip count: %" PRId64 "\n", count);
+  printf("message size: %i octets\n", size);
+  printf("roundtrip count: %" PRId64 "\n", count);
 
   if (pipe(ofds) == -1) {
     perror("pipe");
@@ -89,9 +81,6 @@ int main(int argc, char *argv[]) {
   }
 
   if (!fork()) { /* child */
-
-
-
     for (i = 0; i < count; i++) {
 
       if (read(ifds[0], buf, size) != size) {
@@ -106,14 +95,19 @@ int main(int argc, char *argv[]) {
     }
   } else { /* parent */
 
+    if (gettimeofday(&start_avg, NULL) == -1) {
+      perror("gettimeofday");
+      return 1;
+    }
+
     for (i = 0; i < count; i++) {
-      if (write(ifds[1], buf, size) != size) {
-        perror("write");
+      if (gettimeofday(&start, NULL) == -1) {
+        perror("gettimeofday");
         return 1;
       }
 
-      if (clock_gettime(CLOCK_MONOTONIC, &start) == -1) {
-        perror("clock_gettime");
+      if (write(ifds[1], buf, size) != size) {
+        perror("write");
         return 1;
       }
 
@@ -122,32 +116,36 @@ int main(int argc, char *argv[]) {
         return 1;
       }
 
-
-      if (clock_gettime(CLOCK_MONOTONIC, &stop) == -1) {
-        perror("clock_gettime");
+      if (gettimeofday(&stop, NULL) == -1) {
+        perror("gettimeofday");
         return 1;
       }
 
       delta = ((stop.tv_sec - start.tv_sec) * 1000000000 +
-              (stop.tv_nsec - start.tv_nsec));
+               (stop.tv_nsec - start.tv_nsec));
 
       RTT[i] = delta;
+  
     }
 
-
-    // print avg of RTT skip first 10K numbers
-    uint64_t sum = 0;
-    for (i = 10000; i < count - 1000; i++) {
-      printf("%" PRId64 "\n", RTT[i]);
-      sum += RTT[i];
+    if (gettimeofday(&stop_avg, NULL) == -1) {
+      perror("gettimeofday");
+      return 1;
     }
-    printf("avg: %" PRId64 "\n", sum / (count - 11000));
-    printf("parent %u\n", getpid());
+
+    delta = ((stop_avg.tv_sec - start_avg.tv_sec) * 1000000000 +
+             (stop_avg.tv_nsec - start_avg.tv_nsec));
+
+    // printf("average latency: %" PRId64 " ns\n", delta / (count * 2));
+    printf("average latency: %" PRId64 " ns\n", delta / (count ));
+
+    for(int i = 0; i < count; i++) {
+        printf("single: %" PRId64 " ns\n", RTT[i]);
+    }
+
+    wait(NULL);
 
   }
 
-  free(RTT);
-  free(buf);
-  
   return 0;
 }
